@@ -6,12 +6,12 @@ Allows your Firebase users to authenticate in a CLI app.
 
 Install the demo:
 ```shell
-$ go install github.com/nouney/firelogin/examples/demo
+$ go install github.com/nouney/firelogin/demo
 ```
 
 Run it:
 ```shell
-$ $GOPATH/bin/firelogin-demo
+$ $GOPATH/bin/demo
 Your browser has been opened to visit: http://localhost:8080
 
 Authentication successfull. Welcome, <your full name>.
