@@ -16,7 +16,7 @@ import (
 type Firelogin struct {
 	Config
 
-	user *User
+	User *User
 }
 
 type Config struct {
@@ -120,12 +120,12 @@ func (f *Firelogin) RenewAccessToken(refreshToken string) (*User, error) {
 		return nil, err
 	}
 	defer r.Body.Close()
-	f.user.StsTokenManager.AccessToken = resp.AccessToken
+	f.User.StsTokenManager.AccessToken = resp.AccessToken
 	return f.retrieveUserData(resp.AccessToken)
 }
 
 func (f Firelogin) GetUser() *User {
-	return f.user
+	return f.User
 }
 
 type handlersSetter func(*http.ServeMux)
@@ -177,7 +177,7 @@ func (f *Firelogin) startHTTP(done chan<- struct{}, setHandlers func(*http.Serve
 		if err != nil {
 			log.Fatal(err)
 		}
-		f.user = &user
+		f.User = &user
 		done <- struct{}{}
 	})
 	if setHandlers != nil {
@@ -205,10 +205,10 @@ func (f *Firelogin) retrieveUserData(accessToken string) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = json.NewDecoder(r.Body).Decode(f.user)
+	err = json.NewDecoder(r.Body).Decode(f.User)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Body.Close()
-	return f.user, nil
+	return f.User, nil
 }
