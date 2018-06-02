@@ -15,8 +15,6 @@ import (
 
 type Firelogin struct {
 	Config
-
-	User *User
 }
 
 type Config struct {
@@ -72,7 +70,7 @@ type accessTokenRenewResponse struct {
 }
 
 func New(c *Config) *Firelogin {
-	ret := Firelogin{*c, nil}
+	ret := Firelogin{*c}
 	if ret.Port == "" {
 		ret.Port = "8080"
 	}
@@ -89,7 +87,7 @@ func New(c *Config) *Firelogin {
 }
 
 func (f *Firelogin) Login() (*User, error) {
-	done := make(chan struct{}, 1)
+	done := make(chan *User, 1)
 	url, setHandlers, err := f.getConf()
 	if err != nil {
 		return nil, err
@@ -101,8 +99,8 @@ func (f *Firelogin) Login() (*User, error) {
 	if err != nil {
 		log.Panic(err)
 	}
-	<-done
-	return f.GetUser(), nil
+	usr := <-done
+	return usr, nil
 }
 
 func (f *Firelogin) RenewAccessToken(refreshToken string) (*User, error) {
@@ -120,12 +118,13 @@ func (f *Firelogin) RenewAccessToken(refreshToken string) (*User, error) {
 		return nil, err
 	}
 	defer r.Body.Close()
-	f.User.StsTokenManager.AccessToken = resp.AccessToken
-	return f.retrieveUserData(resp.AccessToken)
-}
-
-func (f Firelogin) GetUser() *User {
-	return f.User
+	usr, err := f.retrieveUserData(resp.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	// f.User.StsTokenManager.AccessToken = resp.AccessToken
+	// f.User.StsTokenManager.RefreshToken = resp.RefreshToken
+	return usr, nil
 }
 
 type handlersSetter func(*http.ServeMux)
@@ -169,7 +168,7 @@ func (f Firelogin) getConf() (url string, setHandlers handlersSetter, err error)
 	return url, setHandlers, nil
 }
 
-func (f *Firelogin) startHTTP(done chan<- struct{}, setHandlers func(*http.ServeMux)) *http.Server {
+func (f *Firelogin) startHTTP(done chan<- *User, setHandlers func(*http.ServeMux)) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		user := User{}
@@ -177,8 +176,7 @@ func (f *Firelogin) startHTTP(done chan<- struct{}, setHandlers func(*http.Serve
 		if err != nil {
 			log.Fatal(err)
 		}
-		f.User = &user
-		done <- struct{}{}
+		done <- &user
 	})
 	if setHandlers != nil {
 		setHandlers(mux)
@@ -189,26 +187,27 @@ func (f *Firelogin) startHTTP(done chan<- struct{}, setHandlers func(*http.Serve
 		err := srv.ListenAndServe()
 		if err != nil {
 			log.Println("Can't start http server:", err.Error())
-			done <- struct{}{}
+			done <- nil
 		}
 	}()
 	return &srv
 }
 
-func (f *Firelogin) retrieveUserData(accessToken string) (*User, error) {
+func (f *Firelogin) retrieveUserData(access string) (*User, error) {
 	r, err := http.PostForm(
 		"https://www.googleapis.com/identitytoolkit/v3/relyingparty/getAccountInfo?key="+f.APIKey,
 		url.Values{
-			"idToken": {accessToken},
+			"idToken": {access},
 		},
 	)
 	if err != nil {
 		return nil, err
 	}
-	err = json.NewDecoder(r.Body).Decode(f.User)
+	usr := User{}
+	err = json.NewDecoder(r.Body).Decode(&usr)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Body.Close()
-	return f.User, nil
+	return &usr, nil
 }
