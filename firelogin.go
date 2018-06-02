@@ -9,167 +9,97 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/pkg/errors"
 	"github.com/rs/cors"
 	"github.com/skratchdot/open-golang/open"
 )
 
 type Firelogin struct {
-	Config
+	// Port to listen to (in case of local HTTP)
+	port string
+	// Firebase API key
+	apiKey string
+	// Firebase auth domain
+	authDomain string
+	// HTML page to serve and to open in a browser to authenticate against Firebase
+	authHTML string
+	// HTML page to serve and to redirect to if the authentication was successfull
+	successHTML string
 }
 
-type Config struct {
-	// Firebase API Key
-	APIKey string
-	// Firebase Auth domain
-	AuthDomain string
-	// Port to listen to
-	Port string
-	// URL to open to authenticate
-	URL string
-	// HTML for auth page
-	AuthHTML string
-	// HTML for success page
-	SuccessHTML string
-}
-
-type User struct {
-	UID           string `json:"uid"`
-	DisplayName   string `json:"displayName"`
-	PhotoURL      string `json:"photoURL"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"emailVerified"`
-	IsAnonymous   bool   `json:"isAnonymous"`
-	ProviderData  []struct {
-		UID         string `json:"uid"`
-		DisplayName string `json:"displayName"`
-		PhotoURL    string `json:"photoURL"`
-		Email       string `json:"email"`
-		ProviderID  string `json:"providerId"`
-	} `json:"providerData"`
-	APIKey          string `json:"apiKey"`
-	AppName         string `json:"appName"`
-	AuthDomain      string `json:"authDomain"`
-	StsTokenManager struct {
-		APIKey         string `json:"apiKey"`
-		RefreshToken   string `json:"refreshToken"`
-		AccessToken    string `json:"accessToken"`
-		ExpirationTime int64  `json:"expirationTime"`
-	} `json:"stsTokenManager"`
-	LastLoginAt string `json:"lastLoginAt"`
-	CreatedAt   string `json:"createdAt"`
-}
-
-type accessTokenRenewResponse struct {
-	AccessToken  string `json:"access_token"`
-	ExpiresIn    string `json:"expires_in"`
-	TokenType    string `json:"token_type"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	UserID       string `json:"user_id"`
-	ProjectID    string `json:"project_id"`
-}
-
-func New(c *Config) *Firelogin {
-	ret := Firelogin{*c}
-	if ret.Port == "" {
-		ret.Port = "8080"
+// New creates a new Firelogin instance
+// apiKey and authDomain can be found in firebase.
+func New(apiKey, authDomain string, opts ...Opt) (*Firelogin, error) {
+	ret := &Firelogin{
+		apiKey:     apiKey,
+		authDomain: authDomain,
 	}
-	if ret.URL == "" {
-		ui := NewFirebaseUI("firecli")
-		if ret.AuthHTML == "" {
-			ret.AuthHTML = ui.AuthHTML()
-		}
-		if ret.SuccessHTML == "" {
-			ret.SuccessHTML = ui.SuccessHTML()
+
+	for _, opt := range opts {
+		err := opt(ret)
+		if err != nil {
+			return nil, err
 		}
 	}
-	return &ret
+
+	if ret.port == "" {
+		WithPort("8000")(ret)
+	}
+
+	ui := NewFirebaseUI("firecli")
+	if ret.authHTML == "" {
+		WithAuthHTML(ui.AuthHTML())(ret)
+	}
+	if ret.successHTML == "" {
+		WithSuccessHTML(ui.SuccessHTML())(ret)
+	}
+	return ret, nil
 }
 
+// Login logs an user in. This blocks until the user authenticates itself (success or fail)
 func (f *Firelogin) Login() (*User, error) {
+	// http server base url
+	url := "http://localhost:" + f.port
+
+	// auth html
+	idxTpl, err := template.New("idxTpl").Parse(f.authHTML)
+	if err != nil {
+		return nil, errors.Wrap(err, "auth html template")
+	}
+
+	// success html
+	scsTpl, err := template.New("scsTpl").Parse(f.successHTML)
+	if err != nil {
+		return nil, errors.Wrap(err, "success html template")
+	}
+
 	done := make(chan *User, 1)
-	url, setHandlers, err := f.getConf()
-	if err != nil {
-		return nil, err
-	}
-	srv := f.startHTTP(done, setHandlers)
-	defer srv.Shutdown(context.Background())
-	fmt.Println("Your browser has been opened to visit:", url)
-	err = open.Run(url)
-	if err != nil {
-		log.Panic(err)
-	}
-	usr := <-done
-	return usr, nil
-}
 
-func (f *Firelogin) RenewAccessToken(refreshToken string) (*User, error) {
-	payload := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-	}
-	r, err := http.PostForm("https://securetoken.googleapis.com/v1/token?key="+f.APIKey, payload)
-	if err != nil {
-		return nil, err
-	}
-	resp := accessTokenRenewResponse{}
-	err = json.NewDecoder(r.Body).Decode(&resp)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Body.Close()
-	usr, err := f.retrieveUserData(resp.AccessToken)
-	if err != nil {
-		return nil, err
-	}
-	// f.User.StsTokenManager.AccessToken = resp.AccessToken
-	// f.User.StsTokenManager.RefreshToken = resp.RefreshToken
-	return usr, nil
-}
-
-type handlersSetter func(*http.ServeMux)
-
-func (f Firelogin) getConf() (url string, setHandlers handlersSetter, err error) {
-	// online
-	if f.URL != "" {
-		return f.URL, nil, nil
-	}
-	// embedded
-	url = "http://localhost:" + f.Port
-	idxTpl, err := template.New("idxTpl").Parse(f.AuthHTML)
-	if err != nil {
-		return "", nil, err
-	}
-	scsTpl, err := template.New("scsTpl").Parse(f.SuccessHTML)
-	if err != nil {
-		return "", nil, err
-	}
+	// params for templates
 	params := struct {
 		APIKey      string
 		AuthDomain  string
 		URL         string
 		SuccessURL  string
 		CallbackURL string
-	}{f.APIKey, f.AuthDomain, url, url + "/success", url + "/callback"}
-	setHandlers = func(mux *http.ServeMux) {
-		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			err := idxTpl.Execute(w, &params)
-			if err != nil {
-				log.Panic(err)
-			}
-		})
-		mux.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) {
-			err := scsTpl.Execute(w, &params)
-			if err != nil {
-				log.Panic(err)
-			}
-		})
-	}
-	return url, setHandlers, nil
-}
+	}{f.apiKey, f.authDomain, url, url + "/success", url + "/callback"}
 
-func (f *Firelogin) startHTTP(done chan<- *User, setHandlers func(*http.ServeMux)) *http.Server {
+	// create HTTP server
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		err := idxTpl.Execute(w, &params)
+		if err != nil {
+			log.Panic(err)
+		}
+	})
+	// called if auth is successfull
+	mux.HandleFunc("/success", func(w http.ResponseWriter, r *http.Request) {
+		err := scsTpl.Execute(w, &params)
+		if err != nil {
+			log.Panic(err)
+		}
+	})
+	// /success should make an ajax call to this endpoint with the firebase user object as payload
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		user := User{}
 		err := json.NewDecoder(r.Body).Decode(&user)
@@ -178,11 +108,11 @@ func (f *Firelogin) startHTTP(done chan<- *User, setHandlers func(*http.ServeMux
 		}
 		done <- &user
 	})
-	if setHandlers != nil {
-		setHandlers(mux)
-	}
-	srv := http.Server{Addr: ":" + f.Port}
+
+	// execute server in background and kill it before return
+	srv := http.Server{Addr: ":" + f.port}
 	srv.Handler = cors.Default().Handler(mux)
+	defer srv.Shutdown(context.Background())
 	go func() {
 		err := srv.ListenAndServe()
 		if err != nil {
@@ -190,12 +120,44 @@ func (f *Firelogin) startHTTP(done chan<- *User, setHandlers func(*http.ServeMux
 			done <- nil
 		}
 	}()
-	return &srv
+
+	// don't care of error, the user will manually open the link if needed
+	open.Run(url)
+	fmt.Println("Your browser has been opened to visit:", url)
+	usr := <-done
+	return usr, nil
 }
 
+// RenewAccessToken renews an access token from a refresh token
+func (f *Firelogin) RenewAccessToken(refreshToken string) (*User, error) {
+	payload := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+	}
+	r, err := http.PostForm("https://securetoken.googleapis.com/v1/token?key="+f.apiKey, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := accessTokenRenewResponse{}
+	err = json.NewDecoder(r.Body).Decode(&resp)
+	if err != nil {
+		return nil, err
+	}
+
+	defer r.Body.Close()
+	usr, err := f.retrieveUserData(resp.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	return usr, nil
+}
+
+// retrieveUserData uses the google API to retrieve the user profile from an access topen
 func (f *Firelogin) retrieveUserData(access string) (*User, error) {
 	r, err := http.PostForm(
-		"https://www.googleapis.com/identitytoolkit/v3/relyingparty/getAccountInfo?key="+f.APIKey,
+		"https://www.googleapis.com/identitytoolkit/v3/relyingparty/getAccountInfo?key="+f.apiKey,
 		url.Values{
 			"idToken": {access},
 		},
@@ -203,11 +165,13 @@ func (f *Firelogin) retrieveUserData(access string) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	usr := User{}
 	err = json.NewDecoder(r.Body).Decode(&usr)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Body.Close()
+
 	return &usr, nil
 }

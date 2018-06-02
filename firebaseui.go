@@ -75,7 +75,7 @@ func (fui FirebaseUI) SuccessHTML() string {
 <html>
 <head>
 	<meta charset="UTF-8">
-	<title>` + fui.name + `</title>
+	<title>` + fui.name + ` - Success</title>
 	<script src="https://www.gstatic.com/firebasejs/4.10.0/firebase.js"></script>
 	<script>
 	// Initialize Firebase

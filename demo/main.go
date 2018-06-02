@@ -9,16 +9,19 @@ import (
 
 func main() {
 	ui := firelogin.NewFirebaseUI("Firelogin-demo", firelogin.GITHUB_AUTH_PROVIDER_ID)
-	flogin := firelogin.New(&firelogin.Config{
-		APIKey:      "AIzaSyCvz8teBEpFBqR6LScQrp_WNcSloZdG8X4",
-		AuthDomain:  "firelogin-demo.firebaseapp.com",
-		AuthHTML:    ui.AuthHTML(),
-		SuccessHTML: ui.SuccessHTML(),
-	})
-	// This will block until the user sign in
+
+	flogin, _ := firelogin.New(
+		"AIzaSyCvz8teBEpFBqR6LScQrp_WNcSloZdG8X4",
+		"firelogin-demo.firebaseapp.com",
+		firelogin.WithAuthHTML(ui.AuthHTML()),
+		firelogin.WithSuccessHTML(ui.SuccessHTML()),
+	)
+
+	// This will block until the user signs in
 	user, err := flogin.Login()
 	if err != nil {
 		log.Panic(err)
 	}
+
 	fmt.Println("Authentication successfull! Welcome,", user.DisplayName)
 }
